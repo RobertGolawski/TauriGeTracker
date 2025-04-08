@@ -1,14 +1,15 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use std::fs;
 // use std::path::PathBuf;
+use std::collections::HashMap;
 use std::time::Duration;
-use std::{collections::HashMap, sync::Mutex};
 // use tauri::http::response;
 use tauri::{Emitter, Manager};
+use tokio::sync::Mutex;
 use tokio::time::interval;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -24,12 +25,12 @@ pub struct ItemData {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ItemPriceData {
-    pub high: f64,
-    pub low: f64,
-    #[serde(rename = "highTime")]
-    pub high_time: DateTime<Utc>,
-    #[serde(rename = "lowTime")]
-    pub low_time: DateTime<Utc>,
+    pub high: Option<f64>,
+    pub low: Option<f64>,
+    #[serde(rename = "highTime", with = "chrono::serde::ts_seconds_option")]
+    pub high_time: Option<DateTime<Utc>>,
+    #[serde(rename = "lowTime", with = "chrono::serde::ts_seconds_option")]
+    pub low_time: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize)]
@@ -175,10 +176,10 @@ async fn load_initial_data(
     }
 
     items_map = items_vec.into_iter().map(|item| (item.id, item)).collect();
-    *state.all_items_cache.lock().unwrap() = items_map.clone();
+    *state.all_items_cache.lock().await = items_map.clone();
     println!(
         "Rust: Updated AppState with {} items.",
-        state.all_items_cache.lock().unwrap().len()
+        state.all_items_cache.lock().await.len()
     );
 
     let tracked_ids_path = data_dir.join(TRACKED_IDS_FILENAME);
@@ -190,7 +191,7 @@ async fn load_initial_data(
             Ok(ids) => {
                 println!("Rust: Successfully loaded {} tracked IDs.", ids.len());
                 tracked_ids = ids.clone();
-                *state.tracked_ids.lock().unwrap() = ids;
+                *state.tracked_ids.lock().await = ids;
             }
             Err(e) => {
                 return Err(format!("Failed to load tracked ids {}", e));
@@ -198,7 +199,7 @@ async fn load_initial_data(
         },
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                *state.tracked_ids.lock().unwrap() = Vec::new();
+                *state.tracked_ids.lock().await = Vec::new();
             }
         }
     }
@@ -283,7 +284,7 @@ async fn manual_price_refresh(
     println!("Manual price fetch triggered");
 
     let ids_to_fetch = {
-        let tracked_ids_guard = state.tracked_ids.lock().unwrap();
+        let tracked_ids_guard = state.tracked_ids.lock().await;
         if tracked_ids_guard.is_empty() {
             println!("Rust: No tracked items for manual refresh");
             return Ok(());
@@ -298,7 +299,7 @@ async fn manual_price_refresh(
             if let Err(e) = app_handle.emit("prices-updated", PriceUpdatePayload { prices }) {
                 eprint!("Error emitting price update: {}", e);
             }
-            *state.last_fetch.lock().unwrap() = Utc::now();
+            *state.last_fetch.lock().await = Utc::now();
 
             Ok(())
         }
@@ -318,14 +319,14 @@ async fn timed_price_refresh(app_handle: tauri::AppHandle) {
         }
     };
     let should_fetch = {
-        let last_fetch_guard = state.last_fetch.lock().unwrap();
+        let last_fetch_guard = state.last_fetch.lock().await;
         Utc::now() >= (*last_fetch_guard + Duration::from_secs(REFRESH_INTERVAL_SECONDS))
     };
     if should_fetch {
         println!("Rust: Auto-refreshing tracked prices");
 
         let ids_to_fetch = {
-            let tracked_ids_guard = state.tracked_ids.lock().unwrap();
+            let tracked_ids_guard = state.tracked_ids.lock().await;
             if tracked_ids_guard.is_empty() {
                 println!("Rust: No ids to refresh in auto-refresh");
                 return;
@@ -340,13 +341,81 @@ async fn timed_price_refresh(app_handle: tauri::AppHandle) {
                 if let Err(e) = app_handle.emit("prices-updated", PriceUpdatePayload { prices }) {
                     eprintln!("Error emitting price update from auto-refresh: {}", e);
                 }
-                *state.last_fetch.lock().unwrap() = Utc::now();
+                *state.last_fetch.lock().await = Utc::now();
             }
             Err(e) => {
                 eprintln!("Rust: Auto-refresh fetch failed {}", e);
             }
         }
     }
+}
+
+#[tauri::command]
+async fn add_tracked_item(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: u32,
+) -> Result<(), String> {
+    let mut tracked_item_guard = state.tracked_ids.lock().await;
+    if !tracked_item_guard.contains(&id) {
+        tracked_item_guard.push(id);
+        println!("Rust: Added item with ID {}", id);
+
+        let ids_to_save = tracked_item_guard.clone();
+
+        drop(tracked_item_guard);
+
+        let data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?;
+
+        let tracked_ids_path = data_dir.join(TRACKED_IDS_FILENAME);
+
+        let json_string = serde_json::to_string_pretty(&ids_to_save)
+            .map_err(|e| format!("Failed to serialize tracked IDs: {}", e))?;
+
+        fs::write(&tracked_ids_path, json_string)
+            .map_err(|e| format!("Failed to write tracked IDs to file {}", e))?;
+    } else {
+        println!("Rust: Item with ID {} already in list", id);
+        drop(tracked_item_guard);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn del_tracked_item(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id_to_del: u32,
+) -> Result<(), String> {
+    let mut tracked_item_guard = state.tracked_ids.lock().await;
+    if let Some(index) = tracked_item_guard.iter().position(|&id| id == id_to_del) {
+        tracked_item_guard.remove(index);
+        println!("Rust: Removed item with ID {}", id_to_del);
+
+        let ids_to_save = tracked_item_guard.clone();
+
+        drop(tracked_item_guard);
+
+        let data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?;
+
+        let tracked_ids_path = data_dir.join(TRACKED_IDS_FILENAME);
+
+        let json_string = serde_json::to_string_pretty(&ids_to_save)
+            .map_err(|e| format!("Failed to serialize tracked IDs: {}", e))?;
+
+        fs::write(&tracked_ids_path, json_string)
+            .map_err(|e| format!("Failed to write tracked IDs to file {}", e))?;
+    } else {
+        println!("Rust: Item with ID {} was never in the list", id_to_del);
+        drop(tracked_item_guard);
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
