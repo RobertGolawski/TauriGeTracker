@@ -4,10 +4,10 @@ use chrono::{DateTime, Utc};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+// use std::path::PathBuf;
 use std::time::Duration;
 use std::{collections::HashMap, sync::Mutex};
-use tauri::http::response;
+// use tauri::http::response;
 use tauri::{Emitter, Manager};
 use tokio::time::interval;
 
@@ -220,32 +220,31 @@ async fn load_initial_data(
 }
 
 async fn fetch_tracked_prices(
-    state: tauri::State<'_, AppState>,
+    ids_to_fetch: &[u32],
+    client: &reqwest::Client,
 ) -> Result<HashMap<u32, ItemPriceData>, String> {
-    let tracked_ids_guard = state.tracked_ids.lock().unwrap();
-
-    if tracked_ids_guard.is_empty() {
-        println!("No tracked items to fetch, returning empty");
+    if ids_to_fetch.is_empty() {
         return Ok(HashMap::new());
     }
-
-    let ids_to_fetch = tracked_ids_guard.clone();
-
-    drop(tracked_ids_guard);
-
+    // let tracked_ids_guard = state.tracked_ids.lock().unwrap();
+    //
+    // if tracked_ids_guard.is_empty() {
+    //     println!("No tracked items to fetch, returning empty");
+    //     return Ok(HashMap::new());
+    // }
+    //
+    // let ids_to_fetch = tracked_ids_guard.clone();
+    //
+    // drop(tracked_ids_guard);
+    //
     let mut fetched_prices: HashMap<u32, ItemPriceData> = HashMap::new();
 
-    let response = state
-        .http_client
-        .get(FETCH_ITEM_API_URL)
-        .send()
-        .await
-        .map_err(|e| {
-            format!(
-                "Failed to send request to {}, got {}",
-                FETCH_ITEM_API_URL, e
-            )
-        })?;
+    let response = client.get(FETCH_ITEM_API_URL).send().await.map_err(|e| {
+        format!(
+            "Failed to send request to {}, got {}",
+            FETCH_ITEM_API_URL, e
+        )
+    })?;
 
     if !response.status().is_success() {
         return Err(format!(
@@ -262,7 +261,7 @@ async fn fetch_tracked_prices(
     let full_price_data = serde_json::from_str::<PriceApiResponse>(&body_text)
         .map_err(|e| format!("Failed to parse price data from JSON {}", e))?;
 
-    for item_id in &ids_to_fetch {
+    for item_id in ids_to_fetch {
         if let Some(price_data_ref) = full_price_data.data.get(item_id) {
             fetched_prices.insert(*item_id, price_data_ref.clone());
         } else {
@@ -282,7 +281,19 @@ async fn manual_price_refresh(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     println!("Manual price fetch triggered");
-    match fetch_tracked_prices(state.clone()).await {
+
+    let ids_to_fetch = {
+        let tracked_ids_guard = state.tracked_ids.lock().unwrap();
+        if tracked_ids_guard.is_empty() {
+            println!("Rust: No tracked items for manual refresh");
+            return Ok(());
+        }
+        tracked_ids_guard.clone()
+    };
+
+    let client = &state.http_client;
+
+    match fetch_tracked_prices(&ids_to_fetch, client).await {
         Ok(prices) => {
             if let Err(e) = app_handle.emit("prices-updated", PriceUpdatePayload { prices }) {
                 eprint!("Error emitting price update: {}", e);
@@ -313,7 +324,18 @@ async fn timed_price_refresh(app_handle: tauri::AppHandle) {
     if should_fetch {
         println!("Rust: Auto-refreshing tracked prices");
 
-        match fetch_tracked_prices(state.clone()).await {
+        let ids_to_fetch = {
+            let tracked_ids_guard = state.tracked_ids.lock().unwrap();
+            if tracked_ids_guard.is_empty() {
+                println!("Rust: No ids to refresh in auto-refresh");
+                return;
+            }
+            tracked_ids_guard.clone()
+        };
+
+        let client = &state.http_client;
+
+        match fetch_tracked_prices(&ids_to_fetch, client).await {
             Ok(prices) => {
                 if let Err(e) = app_handle.emit("prices-updated", PriceUpdatePayload { prices }) {
                     eprintln!("Error emitting price update from auto-refresh: {}", e);
