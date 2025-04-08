@@ -4,11 +4,12 @@ use chrono::{DateTime, Utc};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::hash::Hash;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::{collections::HashMap, sync::Mutex};
 use tauri::http::response;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use tokio::time::interval;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ItemData {
@@ -34,6 +35,11 @@ pub struct ItemPriceData {
 #[derive(Deserialize)]
 struct PriceApiResponse {
     pub data: HashMap<u32, ItemPriceData>,
+}
+
+#[derive(Clone, Serialize)]
+struct PriceUpdatePayload {
+    pub prices: HashMap<u32, ItemPriceData>,
 }
 
 pub struct AppState {
@@ -76,6 +82,7 @@ const ITEMS_CACHE_FILENAME: &str = "items_cache.json";
 const TRACKED_IDS_FILENAME: &str = "tracked_ids.json";
 const MAPPINGS_API_URL: &str = "https://prices.runescape.wiki/api/v1/osrs/mapping";
 const FETCH_ITEM_API_URL: &str = "https://prices.runescape.wiki/api/v1/osrs/latest";
+const REFRESH_INTERVAL_SECONDS: u64 = 60;
 
 #[tauri::command]
 async fn load_initial_data(
@@ -190,7 +197,7 @@ async fn load_initial_data(
             }
         },
         Err(e) => {
-            if e.kind() != std::io::ErrorKind::NotFound {
+            if e.kind() == std::io::ErrorKind::NotFound {
                 *state.tracked_ids.lock().unwrap() = Vec::new();
             }
         }
@@ -255,11 +262,6 @@ async fn fetch_tracked_prices(
     let full_price_data = serde_json::from_str::<PriceApiResponse>(&body_text)
         .map_err(|e| format!("Failed to parse price data from JSON {}", e))?;
 
-    // for item_id in &ids_to_fetch {
-    //     if full_price_data.data.contains_key(&item_id) {
-    //         fetched_prices.insert(&item_id, full_price_data.data.get(&item_id));
-    //     }
-    // }
     for item_id in &ids_to_fetch {
         if let Some(price_data_ref) = full_price_data.data.get(item_id) {
             fetched_prices.insert(*item_id, price_data_ref.clone());
@@ -271,36 +273,58 @@ async fn fetch_tracked_prices(
         }
     }
 
-    // for item in &ids_to_fetch {
-    //     let fetch_url = format!("{}?id={}", FETCH_ITEM_API_URL, item);
-    //     let response = state
-    //         .http_client
-    //         .get(&fetch_url)
-    //         .send()
-    //         .await
-    //         .map_err(|e| format!("Failed to send request to API: {}", e))?;
-    //
-    //     if !response.status().is_success() {
-    //         return Err(format!(
-    //             "API request failed with status: {}",
-    //             response.status()
-    //         ));
-    //     }
-    //
-    //     let body_text = response
-    //         .text()
-    //         .await
-    //         .map_err(|e| format!("Failed to read body as text {}", e))?;
-    //
-    //     println!("{}", body_text);
-    //     let fetched_item_data = serde_json::from_str::<ItemPriceData>(&body_text)
-    //         .map_err(|e| format!("Failed to parse text to json: {}", e))?;
-    //     println!("Rust: Successfully fetched and parsed items from API.");
-    //
-    //     fetched_prices.insert(*item, fetched_item_data);
-    // }
-
     Ok(fetched_prices)
+}
+
+#[tauri::command]
+async fn manual_price_refresh(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    println!("Manual price fetch triggered");
+    match fetch_tracked_prices(state.clone()).await {
+        Ok(prices) => {
+            if let Err(e) = app_handle.emit("prices-updated", PriceUpdatePayload { prices }) {
+                eprint!("Error emitting price update: {}", e);
+            }
+            *state.last_fetch.lock().unwrap() = Utc::now();
+
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Rust: Manual Trigger Price Fetch failed: {}", e);
+            Err(e)
+        }
+    }
+}
+
+async fn timed_price_refresh(app_handle: tauri::AppHandle) {
+    let state = match app_handle.try_state::<AppState>() {
+        Some(state) => state,
+        None => {
+            eprintln!("Error: AppState not managed. Cannot perform timed refresh.");
+            return;
+        }
+    };
+    let should_fetch = {
+        let last_fetch_guard = state.last_fetch.lock().unwrap();
+        Utc::now() >= (*last_fetch_guard + Duration::from_secs(REFRESH_INTERVAL_SECONDS))
+    };
+    if should_fetch {
+        println!("Rust: Auto-refreshing tracked prices");
+
+        match fetch_tracked_prices(state.clone()).await {
+            Ok(prices) => {
+                if let Err(e) = app_handle.emit("prices-updated", PriceUpdatePayload { prices }) {
+                    eprintln!("Error emitting price update from auto-refresh: {}", e);
+                }
+                *state.last_fetch.lock().unwrap() = Utc::now();
+            }
+            Err(e) => {
+                eprintln!("Rust: Auto-refresh fetch failed {}", e);
+            }
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -308,7 +332,25 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::new())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![load_initial_data])
+        .setup(|app| {
+            println!("Rust: setting up hook...");
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = interval(Duration::from_secs(REFRESH_INTERVAL_SECONDS));
+
+                println!("Rust: Background timer started.");
+
+                loop {
+                    interval.tick().await;
+                    timed_price_refresh(app_handle.clone()).await;
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            load_initial_data,
+            manual_price_refresh
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
