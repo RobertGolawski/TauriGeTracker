@@ -227,17 +227,7 @@ async fn fetch_tracked_prices(
     if ids_to_fetch.is_empty() {
         return Ok(HashMap::new());
     }
-    // let tracked_ids_guard = state.tracked_ids.lock().unwrap();
-    //
-    // if tracked_ids_guard.is_empty() {
-    //     println!("No tracked items to fetch, returning empty");
-    //     return Ok(HashMap::new());
-    // }
-    //
-    // let ids_to_fetch = tracked_ids_guard.clone();
-    //
-    // drop(tracked_ids_guard);
-    //
+
     let mut fetched_prices: HashMap<u32, ItemPriceData> = HashMap::new();
 
     let response = client.get(FETCH_ITEM_API_URL).send().await.map_err(|e| {
