@@ -1,14 +1,16 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use reqwest;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::{fs, usize};
 // use std::path::PathBuf;
 use std::collections::HashMap;
 use std::time::Duration;
 // use tauri::http::response;
-use tauri::{Emitter, Manager};
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32String}; // Core types
+use tauri::{scope, Emitter, Manager};
 use tokio::sync::Mutex;
 use tokio::time::interval;
 
@@ -84,6 +86,7 @@ const TRACKED_IDS_FILENAME: &str = "tracked_ids.json";
 const MAPPINGS_API_URL: &str = "https://prices.runescape.wiki/api/v1/osrs/mapping";
 const FETCH_ITEM_API_URL: &str = "https://prices.runescape.wiki/api/v1/osrs/latest";
 const REFRESH_INTERVAL_SECONDS: u64 = 60;
+const MAX_RESULTS: usize = 5;
 
 #[tauri::command]
 async fn load_initial_data(
@@ -408,6 +411,70 @@ async fn del_tracked_item(
     Ok(())
 }
 
+#[tauri::command]
+async fn search_items(
+    query: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ItemData>, String> {
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
+        println!("Rust: Search query empty, returning empty");
+        return Ok(Vec::new());
+    }
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+
+    let pattern = Pattern::parse(&trimmed_query, CaseMatching::Smart, Normalization::Smart);
+
+    let all_item_guard = state.all_items_cache.lock().await;
+
+    // let mut scored_results: Vec<(u32, ItemData)> = all_item_guard
+    //     .values()
+    //     .filter_map(|item_data| {
+    //         let name_utf32: Utf32String = item_data.name.clone().into();
+    //         // matcher
+    //             // .match_pattern(&pattern, &name_utf32)
+    //             // .map(|score| (score, item_data.clone()))
+    //     })
+    //     .collect();
+
+    // let mut scored_results = all_item_guard.values()
+    //     .filter_map(|item| {
+    //         let name = Utf32String::new(&item.name);
+    //         let score = pattern.fuzzy_match(name, &mut matcher)?;
+    //         Some((*id, score))
+    //     })
+    // let mut scored_results: Vec<(u32, ItemData)> = all_item_guard
+    //     .values()
+    //     .filter_map(|item_data| {
+    //         let name = Utf32String::new(&item_data.name);
+    //         let score = pattern.fuzzy_match(name, &mut matcher)?;
+    //         Some((score, item_data.clone()))
+    //     })
+    //     .collect();
+    let mut scored_results: Vec<(u32, ItemData)> = all_item_guard
+        .values()
+        .filter_map(|item_data| {
+            let name_utf32: Utf32String = item_data.name.clone().into();
+
+            pattern
+                .score(name_utf32.slice(..), &mut matcher)
+                .map(|score| (score, item_data.clone()))
+        })
+        .collect();
+    drop(all_item_guard);
+    println!("Rust: Found {} potential matches.", scored_results.len());
+
+    scored_results.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+
+    let final_results: Vec<ItemData> = scored_results
+        .into_iter()
+        .take(MAX_RESULTS)
+        .map(|(_score, item_data)| item_data)
+        .collect();
+    Ok(final_results)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -430,7 +497,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             load_initial_data,
-            manual_price_refresh
+            manual_price_refresh,
+            search_items
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
