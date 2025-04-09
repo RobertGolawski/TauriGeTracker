@@ -48,12 +48,15 @@ function App() {
 
     setIsSearching(true);
     try {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      const fakeResults: ItemData[] = [
-        { id: 1, name: `${trimmedQuery} Result 1`, examine: 'Fake', members: true, lowalch: 1, highalch: 1 },
-        { id: 2, name: `${trimmedQuery} Result 2`, examine: 'Fake', members: false, lowalch: 1, highalch: 1 },
-      ]
-      setSearchResults(fakeResults);
+      const res = await invoke<ItemData[]>("search_items", { query: trimmedQuery });
+      console.log("App: Received results: ", res);
+      setSearchResults(res);
+      // await new Promise(resolve => setTimeout(resolve, 500));
+      // const fakeResults: ItemData[] = [
+      //   { id: 1, name: `${trimmedQuery} Result 1`, examine: 'Fake', members: true, lowalch: 1, highalch: 1 },
+      //   { id: 2, name: `${trimmedQuery} Result 2`, examine: 'Fake', members: false, lowalch: 1, highalch: 1 },
+      // ]
+      // setSearchResults(fakeResults);
     }
     catch (err) {
       console.log("App: Search failed", err);
