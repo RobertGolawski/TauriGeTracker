@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css"; // Assuming you have some basic CSS
 import SearchBar from "./components/searchBar";
 import { resolve } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
+import SearchList from "./components/searchList";
 
 // 1. Define the ItemData interface matching your Rust struct
 // Ensure this matches the fields returned by load_initial_data
@@ -37,8 +38,26 @@ function App() {
   const [currentPrices, setCurrentPrices] = useState<Record<string, ItemPriceData>>({});
   const [searchResults, setSearchResults] = useState<ItemData[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [isSearchFocused, setIsSearchFocused] = useState<boolean>(false);
 
-  const handleSearch = async (query: string) => {
+  const [searchQuery, setSearchQuery] = useState<String>('');
+
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target as Node)) {
+        setIsSearchFocused(false)
+        console.log("App: Clicked outside search, hiding list.");
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
+
+  const handleSearch = useCallback(async (query: string) => {
     const trimmedQuery = query.trim();
     if (!trimmedQuery) {
       setSearchResults([]);
@@ -50,13 +69,8 @@ function App() {
     try {
       const res = await invoke<ItemData[]>("search_items", { query: trimmedQuery });
       console.log("App: Received results: ", res);
+      setSearchQuery(trimmedQuery)
       setSearchResults(res);
-      // await new Promise(resolve => setTimeout(resolve, 500));
-      // const fakeResults: ItemData[] = [
-      //   { id: 1, name: `${trimmedQuery} Result 1`, examine: 'Fake', members: true, lowalch: 1, highalch: 1 },
-      //   { id: 2, name: `${trimmedQuery} Result 2`, examine: 'Fake', members: false, lowalch: 1, highalch: 1 },
-      // ]
-      // setSearchResults(fakeResults);
     }
     catch (err) {
       console.log("App: Search failed", err);
@@ -64,8 +78,21 @@ function App() {
     } finally {
       setIsSearching(false);
     }
+  }, []);
+
+
+  const handleSearchResultSelected = (item: ItemData) => {
+    console.log("App: Search result selected: ", item);
+    setSearchResults([]);
+    setSearchQuery('');
+
+    setIsSearchFocused(false);
   }
 
+  const handleSearchFocus = () => {
+    console.log("App: Focused");
+    setIsSearchFocused(true);
+  }
 
   // 3. useEffect to call the command on component mount
   useEffect(() => {
@@ -121,20 +148,29 @@ function App() {
     };
   }, []);
 
+  const showSearchList = isSearchFocused && searchQuery.length > 0;
+
   // 4. Render based on state
   return (<div className="app-container">
-    <SearchBar onSearch={handleSearch} isSearching={isSearching} />
-    <ul>
-      {searchResults.map(item => (
-        <li key={item.id}>{item.name} (ID: {item.id})</li>
-      ))}
-    </ul>
+    <div ref={searchContainerRef} className="search-container">
+      <SearchBar onSearch={handleSearch} isSearching={isSearching} onFocus={handleSearchFocus} />
+
+      {showSearchList ? <SearchList
+        results={searchResults}
+        onItemSelected={handleSearchResultSelected}
+      /> : null}
+    </div>
   </div>
   );
 }
 
 export default App;
 
+{/* <ul> */ }
+{/*   {searchResults.map(item => ( */ }
+{/*     <li key={item.id}>{item.name} (ID: {item.id})</li> */ }
+{/*   ))} */ }
+{/* </ul> */ }
 
 
 // <div className="container">

@@ -3,11 +3,12 @@ import React, { useState, useEffect } from 'react';
 interface SearchBarProps {
   onSearch: (query: string) => void;
   isSearching: boolean;
+  onFocus: () => void;
 }
 
 const DEBOUNCE_DELAY = 300;
 
-function SearchBar({ onSearch, isSearching }: SearchBarProps) {
+function SearchBar({ onSearch, isSearching, onFocus }: SearchBarProps) {
   const [inputValue, setInputValue] = useState<string>('');
 
 
@@ -38,6 +39,7 @@ function SearchBar({ onSearch, isSearching }: SearchBarProps) {
         type='search'
         placeholder='Search for items...'
         value={inputValue}
+        onFocus={onFocus}
         onChange={handleChange}
       />
     </div>
