@@ -1,29 +1,29 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import "./App.css"; // Assuming you have some basic CSS
+import "./App.css";
 import SearchBar from "./components/searchBar";
-import { resolve } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
 import SearchList from "./components/searchList";
+import ItemDetail from "./components/itemDetail";
+import TrackedItemsDisplay from "./components/trackedItemsDisplay";
 
-// 1. Define the ItemData interface matching your Rust struct
-// Ensure this matches the fields returned by load_initial_data
+
 interface ItemData {
-  id: number; // Use number for u32
+  id: number;
   name: string;
   examine: string;
   members: boolean;
   lowalch: number;
   highalch: number;
-  limit?: number; // Use optional if it's Option<u32> in Rust or might be missing
+  limit?: number;
   // Add icon if you included it: icon?: string;
 }
 
 interface ItemPriceData {
   high: number;
   low: number;
-  high_time?: string | null;
-  low_time?: string | null;
+  highTime?: string | null;
+  lowTime?: string | null;
 }
 
 interface PriceUpdatePayload {
@@ -31,16 +31,13 @@ interface PriceUpdatePayload {
 }
 
 function App() {
-  // 2. State variables
-  const [isLoading, setIsLoading] = useState<boolean>(true); // Start loading
-  const [error, setError] = useState<string | null>(null);
-  const [trackedItems, setTrackedItems] = useState<ItemData[]>([]); // To hold the result
+  const [trackedItems, setTrackedItems] = useState<ItemData[]>([]);
   const [currentPrices, setCurrentPrices] = useState<Record<string, ItemPriceData>>({});
   const [searchResults, setSearchResults] = useState<ItemData[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [isSearchFocused, setIsSearchFocused] = useState<boolean>(false);
-
   const [searchQuery, setSearchQuery] = useState<String>('');
+  const [selectedItemDetail, setSelectedItemDetail] = useState<ItemData | null>(null);
 
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
@@ -82,6 +79,8 @@ function App() {
 
 
   const handleSearchResultSelected = (item: ItemData) => {
+
+    handleShowDetails(item);
     console.log("App: Search result selected: ", item);
     setSearchResults([]);
     setSearchQuery('');
@@ -94,27 +93,61 @@ function App() {
     setIsSearchFocused(true);
   }
 
-  // 3. useEffect to call the command on component mount
+  const handleAdd = async (id: number) => {
+    if (trackedItems.some(item => item.id === id)) {
+      return;
+    }
+
+    try {
+      const res = await invoke<void>("add_tracked_item", { id: id });
+      console.log("App: Result of add: ", res);
+
+      if (selectedItemDetail && selectedItemDetail.id === id) {
+        setTrackedItems(currentTracked => [...currentTracked, selectedItemDetail]);
+      } else {
+        console.warn("App: Added item not currently selected, might need refresh");
+      }
+    }
+    catch (err) {
+      console.error("App: Error tracking item: ", err);
+    }
+  }
+
+  const handleDel = async (id: number) => {
+    try {
+      const res = await invoke<void>("del_tracked_item", { idToDel: id });
+      console.log("App: Result of del: ", res);
+
+      setTrackedItems(currentTracked => currentTracked.filter(item => item.id !== id));
+    }
+    catch (err) {
+      console.error("App: Error deleting tracked item: ", err);
+    }
+  }
+
+  const handleShowDetails = (item: ItemData) => {
+    console.log("App: Showing details for: ", item.name);
+    setSelectedItemDetail(item);
+  }
+
+  const handleCloseDetailModal = () => {
+    console.log("App: Closing details modal");
+    setSelectedItemDetail(null);
+  }
+
   useEffect(() => {
     console.log("Frontend: Attempting to invoke 'load_initial_data'...");
-    invoke<ItemData[]>("load_initial_data") // Specify the expected return type
+    invoke<ItemData[]>("load_initial_data")
       .then((result) => {
         console.log("Frontend: Successfully received data:", result);
-        setTrackedItems(result); // Store the returned tracked items
-        setError(null); // Clear any previous errors
+        setTrackedItems(result);
       })
       .catch((err) => {
         console.error("Frontend: Error invoking 'load_initial_data':", err);
-        setError(
-          typeof err === "string" ? err : "An unknown error occurred",
-        ); // Store the error message
-        setTrackedItems([]); // Clear items on error
-      })
-      .finally(() => {
-        setIsLoading(false); // Stop loading indicator regardless of success/failure
-      });
-  }, []); // Empty dependency array means this runs only once on mount
 
+        setTrackedItems([]);
+      })
+  }, []);
 
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
@@ -148,72 +181,46 @@ function App() {
     };
   }, []);
 
+  const handleManualRefresh = async () => {
+    try {
+      let res = await invoke<void>("manual_price_refresh");
+      console.log("App: Manual refresh response: ", res);
+    } catch (err) {
+      console.error("App: Problem with manual refresh: ", err);
+    }
+  }
+
   const showSearchList = isSearchFocused && searchQuery.length > 0;
 
-  // 4. Render based on state
   return (<div className="app-container">
     <div ref={searchContainerRef} className="search-container">
-      <SearchBar onSearch={handleSearch} isSearching={isSearching} onFocus={handleSearchFocus} />
+      <SearchBar onSearch={handleSearch} onFocus={handleSearchFocus} />
 
       {showSearchList ? <SearchList
         results={searchResults}
         onItemSelected={handleSearchResultSelected}
       /> : null}
     </div>
+    <button onClick={handleManualRefresh}>Refresh Prices Manually</button>
+    <TrackedItemsDisplay
+      items={trackedItems}
+      prices={currentPrices}
+      onShowDetails={handleShowDetails}
+      onRemoveItem={handleDel} />
+
+    {selectedItemDetail && (
+      <ItemDetail
+        item={selectedItemDetail}
+        onClose={handleCloseDetailModal}
+        onAdd={handleAdd}
+        onDel={handleDel}
+        isTracked={trackedItems.some(tracked => tracked.id === selectedItemDetail.id)}
+      />
+    )}
   </div>
   );
 }
 
 export default App;
 
-{/* <ul> */ }
-{/*   {searchResults.map(item => ( */ }
-{/*     <li key={item.id}>{item.name} (ID: {item.id})</li> */ }
-{/*   ))} */ }
-{/* </ul> */ }
-
-
-// <div className="container">
-//   <h1>OSRS GE Tracker - Initial Load Test</h1>
-//
-//   {isLoading && <p>Loading initial data from backend...</p>}
-//
-//   {error && (
-//     <div style={{ color: "red", border: "1px solid red", padding: "10px" }}>
-//       <h2>Error Loading Data:</h2>
-//       <pre>{error}</pre>
-//       <p>
-//         Check the console (View . Toggle Developer Tools in Tauri app) and
-//         the terminal where you ran `npm run tauri dev` for more details.
-//       </p>
-//     </div>
-//   )}
-//
-//   {!isLoading && !error && (
-//     <div>
-//       <h2>Initial Tracked Items Loaded:</h2>
-//       {trackedItems.length > 0 ? (
-//         <ul>
-//           {trackedItems.map((item) => (
-//             <li key={item.id}>
-//               <strong>ID:</strong> {item.id} <br />
-//               <strong>Name:</strong> {item.name} <br />
-//               <strong>Examine:</strong> {item.examine} <br />
-//               {/* Add other fields if desired */}
-//             </li>
-//           ))}
-//         </ul>
-//       ) : (
-//         <p>
-//           No tracked items found (or the tracked_ids.json file is empty or
-//           missing).
-//         </p>
-//       )}
-//       <p>
-//         (Backend should have also loaded/fetched the full item cache in the
-//         background)
-//       </p>
-//     </div>
-//   )}
-// </div>
 

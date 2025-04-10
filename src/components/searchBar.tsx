@@ -2,13 +2,12 @@ import React, { useState, useEffect } from 'react';
 
 interface SearchBarProps {
   onSearch: (query: string) => void;
-  isSearching: boolean;
   onFocus: () => void;
 }
 
 const DEBOUNCE_DELAY = 300;
 
-function SearchBar({ onSearch, isSearching, onFocus }: SearchBarProps) {
+function SearchBar({ onSearch, onFocus }: SearchBarProps) {
   const [inputValue, setInputValue] = useState<string>('');
 
 

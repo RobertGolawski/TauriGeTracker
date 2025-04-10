@@ -1,16 +1,12 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-
 use chrono::{DateTime, Utc};
-use reqwest;
-use serde::{Deserialize, Serialize};
-use std::{fs, usize};
-// use std::path::PathBuf;
-use std::collections::HashMap;
-use std::time::Duration;
-// use tauri::http::response;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32String}; // Core types
-use tauri::{scope, Emitter, Manager};
+use reqwest;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::time::Duration;
+use std::{fs, usize};
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 use tokio::time::interval;
 
@@ -428,30 +424,6 @@ async fn search_items(
 
     let all_item_guard = state.all_items_cache.lock().await;
 
-    // let mut scored_results: Vec<(u32, ItemData)> = all_item_guard
-    //     .values()
-    //     .filter_map(|item_data| {
-    //         let name_utf32: Utf32String = item_data.name.clone().into();
-    //         // matcher
-    //             // .match_pattern(&pattern, &name_utf32)
-    //             // .map(|score| (score, item_data.clone()))
-    //     })
-    //     .collect();
-
-    // let mut scored_results = all_item_guard.values()
-    //     .filter_map(|item| {
-    //         let name = Utf32String::new(&item.name);
-    //         let score = pattern.fuzzy_match(name, &mut matcher)?;
-    //         Some((*id, score))
-    //     })
-    // let mut scored_results: Vec<(u32, ItemData)> = all_item_guard
-    //     .values()
-    //     .filter_map(|item_data| {
-    //         let name = Utf32String::new(&item_data.name);
-    //         let score = pattern.fuzzy_match(name, &mut matcher)?;
-    //         Some((score, item_data.clone()))
-    //     })
-    //     .collect();
     let mut scored_results: Vec<(u32, ItemData)> = all_item_guard
         .values()
         .filter_map(|item_data| {
@@ -473,6 +445,46 @@ async fn search_items(
         .map(|(_score, item_data)| item_data)
         .collect();
     Ok(final_results)
+}
+
+#[tauri::command]
+async fn fetch_search_item(
+    id: u32,
+    state: tauri::State<'_, AppState>,
+) -> Result<ItemPriceData, String> {
+    let url = format!("{}?id={}", FETCH_ITEM_API_URL, id);
+    let response = state.http_client.get(url).send().await.map_err(|e| {
+        format!(
+            "Failed to send request to {}, got {}",
+            FETCH_ITEM_API_URL, e
+        )
+    })?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "API request failed with status: {}",
+            response.status()
+        ));
+    }
+
+    let body_text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read the latest fetch map {}", e))?;
+
+    let full_price_data = serde_json::from_str::<PriceApiResponse>(&body_text)
+        .map_err(|e| format!("Failed to parse price data from JSON {}", e))?;
+
+    let price_data_option = full_price_data.data.get(&id);
+
+    if let Some(price_data_ref) = price_data_option {
+        Ok(price_data_ref.clone())
+    } else {
+        Err(format!(
+            "Price data for ID {} not found in API response",
+            id
+        ))
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -498,7 +510,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_initial_data,
             manual_price_refresh,
-            search_items
+            search_items,
+            add_tracked_item,
+            del_tracked_item,
+            fetch_search_item
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

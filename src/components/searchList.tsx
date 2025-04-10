@@ -1,12 +1,12 @@
 
 interface ItemData {
-  id: number; // Use number for u32
+  id: number;
   name: string;
   examine: string;
   members: boolean;
   lowalch: number;
   highalch: number;
-  limit?: number; // Use optional if it's Option<u32> in Rust or might be missing
+  limit?: number;
   // Add icon if you included it: icon?: string;
 }
 
@@ -27,12 +27,7 @@ function SearchList({ results, onItemSelected }: SearchListProps) {
   }
 
   return (
-    <div className="search-list" style={{
-      color: "red",
-      border: "2px dashed blue", // Example with different border style
-      borderRadius: "5px", // Optional: Rounded corners
-      padding: "15px"
-    }}>
+    <div className="search-list" >
       <ul>
         {results.map((item) => (
           <li
